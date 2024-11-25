@@ -1,23 +1,7 @@
-""" BlueSky Test Plugin. This plugin prints a message every 5 seconds. """
-
-from Remove import calculate_triangle_points, nm_to_km
+# from Remove import calculate_triangle_points, nm_to_km
 from bluesky import core, stack
 import random
-
-LMML_LAT = 35.857012
-LMML_LONG = 14.477101
-LMML_WPT_LAT = 35.727825
-LMML_WPT_LONG = 14.628304
-# CIRCLE_RADIUS = nm_to_km(20)
-CIRCLE_RADIUS = 20
-
-SAFETY = 0.98
-AREA_MAX_LAT = 40.06*SAFETY
-AREA_MIN_LAT = 33.62*SAFETY
-AREA_MAX_LONG = 21.87*SAFETY
-AREA_MIN_LONG = 7.97*SAFETY
-
-COOL_PLANE_NAMES = ['HAWK','EAGLE', 'FALCON', 'SCORPION', 'VIPER', 'RAVEN', 'PHOENIX', 'SPARROW', 'HORNET', 'PEGASUS']
+from Constants import *
 
 def generate_random_lat_long():
     """ Generate a random latitude and longitude within the defined area. """
@@ -31,8 +15,7 @@ def init_plugin():
         'plugin_name': 'TestPlugin',  # Name of the plugin
         'plugin_type': 'sim'  # Type of plugin ('sim' for simulation-side)
     }
-
-    # Instantiate the plugin class so it runs during simulation
+    
     TestPlugin()
 
     return config
@@ -50,6 +33,7 @@ class TestPlugin(core.Entity):
         
         stack.stack('PAN 37, 14.24')
         stack.stack('ZOOM 0.3')
+        stack.stack('TRAILS ON')
         
         stack.stack('CRECMD COLOUR 255,255,255')
         
@@ -94,9 +78,9 @@ class TestPlugin(core.Entity):
         
         # stack.stack('SCHEDULE DEL HAWK +600')
 
-    @core.timed_function(name='testplugin_update', dt=600)
-    def update(self):
-        # stack.stack('HAWK')
-        # stack.stack('DIST HAWK, LMML')
-        # print(info)
-        pass
+    # @core.timed_function(name='testplugin_update', dt=600)
+    # def update(self):
+    #     # stack.stack('HAWK')
+    #     # stack.stack('DIST HAWK, LMML')
+    #     # print(info)
+    #     pass
