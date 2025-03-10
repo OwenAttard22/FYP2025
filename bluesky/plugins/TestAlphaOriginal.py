@@ -61,7 +61,6 @@ class Plane:
         self.heading = heading
         self.dist_to_waypoint = 0.0  # Initialize with default value
         self.qdr_to_waypoint = 0.0   # Initialize with default value
-        self.done = False
         
         self.neighbours = [None,None,None,None,None,None] # format of neighbours: Neighbour1, Dist1, Brg1, Neighbour2, Dist2, Brg2
 
@@ -112,41 +111,45 @@ class TestAlpha(core.Entity):
                 data = conn.recv(4096).decode()
                 if not data:
                     continue
+                
+                # print(f"Received data: {data}")
+                split_data = data.split("\n")
+                split_data = [msg.strip() for msg in split_data if msg.strip()] # remove empty string
+                for split in split_data:
+                    message = json.loads(split)
 
-                message = json.loads(data)
+                    if "reset" in message and message["reset"] is True:
+                        print("Received reset command from Gym. Resetting environment...")
+                        self.action_reset()
 
-                if "reset" in message and message["reset"] is True:
-                    print("Received reset command from Gym. Resetting environment...")
-                    self.action_reset()
+                    # Process actions
+                    if "actions" in message:
+                        self.action_apply_action(message["actions"])
 
-                # Process actions
-                if "actions" in message:
-                    self.action_apply_action(message["actions"])
+                    # Process planes that are marked as done
+                    if "done_planes" in message:
+                        for plane_id in message["done_planes"]:
+                            print(f"❌ To remove {plane_id}")
+                            self.action_plane_done(plane_id)
 
-                # Process planes that are marked as done
-                if "done_planes" in message:
-                    for plane_id in message["done_planes"]:
-                        print(f"❌ To remove {plane_id} .")
-                        self.action_plane_done(plane_id)
+                    if "type" in message and message["type"] == "observations":
 
-                if "type" in message and message["type"] == "observations":
+                        observations = {}
+                        for plane_id, plane in self.planes.items():
+                            observations[plane_id] = {
+                                "lat": plane.lat,
+                                "long": plane.long,
+                                "heading": plane.heading,
+                                "dist_to_wpt": plane.dist_to_waypoint,
+                                "qdr_to_wpt": plane.qdr_to_waypoint,
+                                "neighbour1_dist": plane.neighbours[1],
+                                "neighbour1_bearing": plane.neighbours[2],
+                                "neighbour2_dist": plane.neighbours[4],
+                                "neighbour2_bearing": plane.neighbours[5],
+                            }
 
-                    observations = {}
-                    for plane_id, plane in self.planes.items():
-                        observations[plane_id] = {
-                            "lat": plane.lat,
-                            "long": plane.long,
-                            "heading": plane.heading,
-                            "dist_to_wpt": plane.dist_to_waypoint,
-                            "qdr_to_wpt": plane.qdr_to_waypoint,
-                            "neighbour1_dist": plane.neighbours[1],
-                            "neighbour1_bearing": plane.neighbours[2],
-                            "neighbour2_dist": plane.neighbours[4],
-                            "neighbour2_bearing": plane.neighbours[5],
-                        }
-
-                    # print(f"Sending Observations: {observations.keys()}")
-                    conn.sendall(json.dumps(observations).encode())
+                        # print(f"Sending Observations: {observations.keys()}")
+                        conn.sendall(json.dumps(observations).encode())
 
             except Exception as e:
                 print(f"Error in TCP communication: {e}")
@@ -185,8 +188,10 @@ class TestAlpha(core.Entity):
                 # print(plane, plane_id)
                 call_sign = plane_id.upper()
                 destination = DESTINATIONS.get(call_sign, [0, 0])
-                dist_to_wpt, qdr_to_wpt = tools.geo.qdrdist(lat, lon, destination[0], destination[1])
+                _, qdr_to_wpt = tools.geo.qdrdist(lat, lon, destination[0], destination[1])
                 dist_to_wpt = geopy.distance.distance((lat, lon), (destination[0], destination[1])).km
+                if dist_to_wpt > 600:
+                    print(plane_id, dist_to_wpt)
                 plane.update_position(lat, lon, hdg, dist_to_wpt, qdr_to_wpt)
 
         # Check for new echo messages

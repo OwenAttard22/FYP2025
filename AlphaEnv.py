@@ -10,7 +10,7 @@ import time
 HOST = "127.0.0.1"
 PORT = 8000
 MAX_AGENTS = 18  # Adjust based on scenario
-CALLSIGNS = ['HAWK', 'EAGLE', 'FALCON', 'SCORPION', 'VIPER', 'RAVEN', 'PHOENIX', 'SPARROW', 'HORNET', 'PEGASUS', 'TALON', 'GRYPHON', 'WRAITH', 'LIGHTNING', 'DRAGON', 'THUNDERBIRD', 'STORM', 'BLADE']
+# CALLSIGNS = ['HAWK', 'EAGLE', 'FALCON', 'SCORPION', 'VIPER', 'RAVEN', 'PHOENIX', 'SPARROW', 'HORNET', 'PEGASUS', 'TALON', 'GRYPHON', 'WRAITH', 'LIGHTNING', 'DRAGON', 'THUNDERBIRD', 'STORM', 'BLADE']
 
 class AlphaEnv(gym.Env):
     """ Multi-Agent Gymnasium Environment for BlueSky ATC """
@@ -61,7 +61,7 @@ class AlphaEnv(gym.Env):
         # Receive new observations
         observations, formatted_obs = self.receive_observations()
         # print(formatted_obs)
-        # callsigns = list(observations.keys())
+        callsigns = list(observations.keys())
         # print("Callsigns: ", callsigns)
         
         # # Send action to BlueSky
@@ -76,11 +76,11 @@ class AlphaEnv(gym.Env):
         for i in range(self.num_agents):
             # print("i: ", i)
             if self.done_n[i] and not self.removed_n[i]:
-                done_planes.append(CALLSIGNS[i])
+                done_planes.append(callsigns[i])
                 self.removed_n[i] = True
                 
         if done_planes:
-            print("Done Planes: ", done_planes)
+            # print("Done Planes: ", done_planes)
             self.send_action({"done_planes": done_planes})
         
         return observations, self.reward_n, self.done_n, {}
@@ -170,15 +170,18 @@ class AlphaEnv(gym.Env):
 
             comp_rewards_n[i] = rc + ra + rt + rr
             
-            # if dist_to_wpt < 20:
-                # print("<20", i ,dist_to_wpt)
+            # if dist_to_wpt < 10:
+            #     print(obs, dist_to_wpt)
+            
+            if obs == 'LIGHTNING':
+                print("LIGHTNING: ", dist_to_wpt)
             self.done_n[i] = True if (dist_to_wpt < 5) else False
 
         return comp_rewards_n, self.done_n
 
     def send_action(self, action):
         """ Sends action data to BlueSky """
-        action_data = json.dumps(action)
+        action_data = json.dumps(action) + "\n"
         self.client_socket.sendall(action_data.encode())
 
     def render(self, observations, mode='human'):
