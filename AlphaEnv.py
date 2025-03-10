@@ -1,0 +1,283 @@
+import gym
+import numpy as np
+from gym import spaces
+import socket
+import json
+import pygame
+import time
+
+# Constants
+HOST = "127.0.0.1"
+PORT = 8000
+MAX_AGENTS = 18  # Adjust based on scenario
+CALLSIGNS = ['HAWK', 'EAGLE', 'FALCON', 'SCORPION', 'VIPER', 'RAVEN', 'PHOENIX', 'SPARROW', 'HORNET', 'PEGASUS', 'TALON', 'GRYPHON', 'WRAITH', 'LIGHTNING', 'DRAGON', 'THUNDERBIRD', 'STORM', 'BLADE']
+
+class AlphaEnv(gym.Env):
+    """ Multi-Agent Gymnasium Environment for BlueSky ATC """
+
+    metadata = {"render.modes": ["human"]}
+
+    def __init__(self, num_agents=MAX_AGENTS, action_space_type="discrete"):
+        super(AlphaEnv, self).__init__()
+        
+        self.num_agents = num_agents
+        self.action_space_type = action_space_type
+        self.running = True  # To control execution loop
+        
+        self.done_n = [False] * self.num_agents
+        self.removed_n = [False] * self.num_agents # to track if planes have been removed from scenario once landed
+        self.reward_n = [0] * self.num_agents
+        
+        # Initialize TCP connection to BlueSky plugin
+        self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.client_socket.connect((HOST, PORT))
+        print("Connected to BlueSky Plugin")
+
+        # Define action space: Discrete or Continuous
+        if action_space_type == "discrete":
+            self.action_space = [spaces.Discrete(9) for _ in range(num_agents)]  # [-20, -15, ..., 20]
+        # else:
+        #     self.action_space = [spaces.Box(low=-20, high=20, shape=(1,), dtype=np.float32) for _ in range(num_agents)]
+
+        # Define observation space
+        self.observation_space = [
+            spaces.Box(low=-np.inf, high=np.inf, shape=(9,), dtype=np.float32) for _ in range(num_agents)
+        ]
+    
+    def reset(self):
+        """ Reset the environment and receive the initial state """
+        self.done_n = [False] * self.num_agents  # Reset done flags
+        self.reward_n = [0] * self.num_agents  # Reset reward list
+        # Reset state
+        self.send_action({"reset": True})
+        time.sleep(0.5)
+        return self.receive_observations()
+
+    def step(self, action_n=None):
+        """ Execute a step in the environment with multiple agent actions """
+        self.reward_n = [0] * self.num_agents  # reset reward list
+        self.send_action({"type": "observations"})
+        
+        # Receive new observations
+        observations, formatted_obs = self.receive_observations()
+        # print(formatted_obs)
+        # callsigns = list(observations.keys())
+        # print("Callsigns: ", callsigns)
+        
+        # # Send action to BlueSky
+        # action_data = json.dumps({"actions": action_n})
+        # self.client_socket.sendall(action_data.encode())
+
+        self.reward_n, self.done_n = self.compute_rewards(observations)
+        
+        # done_planes = [callsigns[i] for i in range(self.num_agents) if self.done_n[i]]
+        
+        done_planes = []
+        for i in range(self.num_agents):
+            # print("i: ", i)
+            if self.done_n[i] and not self.removed_n[i]:
+                done_planes.append(CALLSIGNS[i])
+                self.removed_n[i] = True
+                
+        if done_planes:
+            print("Done Planes: ", done_planes)
+            self.send_action({"done_planes": done_planes})
+        
+        return observations, self.reward_n, self.done_n, {}
+
+    def receive_observations(self):
+        """ Requests and Receives aircraft data from the BlueSky plugin """
+
+        try:
+
+            # Set a timeout to prevent blocking indefinitely
+            self.client_socket.settimeout(3.0)
+
+            buffer = ""
+            while True:
+                chunk = self.client_socket.recv(4096).decode()  # Receive chunk of data
+
+                if not chunk:
+                    break  # Stop if no more data
+
+                buffer += chunk
+
+                try:
+                    observations = json.loads(buffer)
+                    # print(f" Observations Received: {list(observations.keys())}")
+                    return observations, [self.format_observation(obs) for obs in observations.values()]
+                except json.JSONDecodeError:
+                    # print("Incomplete JSON received, waiting for more data...")
+                    continue  # Wait for more data to complete JSON
+
+        except socket.timeout:
+            print("Timeout: No data received from BlueSky within 3 seconds.")
+            return {}, [np.zeros(9) for _ in range(self.num_agents)]  # Return empty data
+
+        except Exception as e:
+            print(f"Connection Error: {e}")
+            return {}, [np.zeros(9) for _ in range(self.num_agents)]  # Return empty data
+
+
+
+    def format_observation(self, obs):
+        """ Convert observation JSON into numpy array """
+        return np.array([
+            obs["lat"], 
+            obs["long"], 
+            obs["heading"], 
+            obs["dist_to_wpt"], 
+            obs["qdr_to_wpt"],
+            obs["neighbour1_dist"], 
+            obs["neighbour1_bearing"], 
+            obs["neighbour2_dist"], 
+            obs["neighbour2_bearing"]
+        ], dtype=np.float32)
+
+    def compute_rewards(self, observations):
+        """ Compute rewards based on the current state following rc, ra, rt, rr 
+            - r_c = Penalty for being too close to another aircraft (<10 km)
+            - r_a = Penalty for deviating too far from destination
+            - r_t = Small penalty per timestep to encourage faster arrival
+            - r_r = Reward for reaching the destination
+        """
+        
+        
+        comp_rewards_n = [0] * self.num_agents
+
+        for i, obs in enumerate(observations):
+            if obs is None or self.done_n[i]:  # Skip processing if plane is already done
+                continue
+            
+            # print("OBS, ", observations[obs])
+            lat, lon, heading, dist_to_wpt, qdr_to_wpt, n1_dist, n1_bearing, n2_dist, n2_bearing = observations[obs].values()
+            # print(n1_dist, type(n1_dist))
+            # print(n2_dist, type(n2_dist))
+            # print(dist_to_wpt, type(dist_to_wpt))
+
+            if n1_dist < 10:
+                rc = -1
+                self.done_n[i] = True
+            elif n2_dist < 10:
+                rc = -2
+                self.done_n[i] = True
+            else:
+                rc = 0
+                
+            ra = -0.5 if dist_to_wpt > 500 else 0 # subject to change I.E. PLEASE CHANGE
+            rt = -0.01  
+            rr = 1 if dist_to_wpt < 1 else 0  
+
+            comp_rewards_n[i] = rc + ra + rt + rr
+            
+            # if dist_to_wpt < 20:
+                # print("<20", i ,dist_to_wpt)
+            self.done_n[i] = True if (dist_to_wpt < 5) else False
+
+        return comp_rewards_n, self.done_n
+
+    def send_action(self, action):
+        """ Sends action data to BlueSky """
+        action_data = json.dumps(action)
+        self.client_socket.sendall(action_data.encode())
+
+    def render(self, observations, mode='human'):
+        """ Render aircraft positions and relevant information on a 2D Pygame map """
+
+        if not hasattr(self, 'screen'):  # Initialize Pygame only if not already done
+            pygame.init()
+            self.screen = pygame.display.set_mode((1000, 800))  # Set screen size
+            pygame.display.set_caption("BlueSky ATC - Multi-Agent Environment")
+            self.font = pygame.font.Font(None, 24)
+
+        self.screen.fill((30, 30, 30))  # Dark background
+
+        # Define Fixed Airports (Reference Points)
+        airports = {
+            "LMML": (35.8575, 14.4775),  # Malta
+            "LICJ": (38.1864, 13.0914),  # Palermo
+            "LICC": (37.4667, 15.0664)   # Catania
+        }
+
+        # Convert latitude/longitude to screen coordinates
+        def to_screen_coords(lat, lon):
+            """ Convert real-world coordinates to screen space """
+            lat = float(lat)
+            lon = float(lon)
+            MAP_TOP_LEFT = (40.0, 7.0)  # (Max Lat, Min Lon)
+            MAP_BOTTOM_RIGHT = (33.0, 22.0)  # (Min Lat, Max Lon)
+            SCREEN_WIDTH, SCREEN_HEIGHT = 1000, 800  # Match Pygame screen size
+            x = int((lon - MAP_TOP_LEFT[1]) / (MAP_BOTTOM_RIGHT[1] - MAP_TOP_LEFT[1]) * SCREEN_WIDTH)
+            y = int((MAP_TOP_LEFT[0] - lat) / (MAP_TOP_LEFT[0] - MAP_BOTTOM_RIGHT[0]) * SCREEN_HEIGHT)
+            return x, y
+
+        # Draw Airport Locations
+        for name, (lat, lon) in airports.items():
+            x, y = to_screen_coords(lat, lon)
+            pygame.draw.circle(self.screen, (255, 255, 0), (x, y), 10)  # Yellow for Airports
+            text_surface = self.font.render(name, True, (255, 255, 0))
+            self.screen.blit(text_surface, (x + 5, y - 20))
+        # print("Render Observation", observations)
+
+        # Draw All Aircraft
+        for i, data in enumerate(observations):
+            # print("DATA", data, observations[data]["lat"], observations[data]["long"])
+            x, y = to_screen_coords(observations[data]["lat"], observations[data]["long"])  # (lat, long)
+
+            # Determine color based on distance to waypoint
+            dist_to_wpt = observations[data]["dist_to_wpt"]
+            if dist_to_wpt > 150:
+                color = (65, 169, 204)  # Blue (Far)
+            elif 101 <= dist_to_wpt <= 150:
+                color = (135, 194, 83)  # Green (Mid-Range)
+            elif 51 <= dist_to_wpt < 101:
+                color = (194, 148, 83)  # Orange (Approaching)
+            else:
+                color = (194, 83, 83)  # Red (Very Close)
+
+            # Draw aircraft as small squares
+            pygame.draw.rect(self.screen, color, (x - 5, y - 5, 10, 10))
+
+            # Display Aircraft Information (Callsign, Heading, Distance to Waypoint)
+            plane_text = (
+                f"Plane {i+1} | {observations[data]["heading"]:.1f}°\n"
+                f"Dist: {observations[data]["dist_to_wpt"]:.1f} km | Bearing: {observations[data]["qdr_to_wpt"]:.1f}°"
+            )
+            text_lines = plane_text.split("\n")
+
+            for j, line in enumerate(text_lines):
+                text_surface = self.font.render(line, True, (255, 255, 255))
+                self.screen.blit(text_surface, (x + 12, y + (j * 15)))  # Offset text to the right
+
+        pygame.display.flip()
+        
+    def dummy(self, observations):
+        return [4] * self.num_agents
+    
+    def close(self):
+        """ Close the environment and terminate the connection """
+        self.client_socket.close()
+        self.running = False
+
+
+def test():
+    env = AlphaEnv()
+    
+    while True:
+        # print("Resetting environment...")
+        # obs = env.reset()
+        # print("Reset done")
+        running  = True
+        
+        while running:
+            obs, reward_n, done_n, _ = env.step()
+            env.render(obs)
+            active_planes = sum(not done for done in done_n)
+            if active_planes <= 3:
+                print("Epsidoe done, resetting...")
+                running = False
+                
+    env.close()
+    
+if __name__ == "__main__":
+    test()
