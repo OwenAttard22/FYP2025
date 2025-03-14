@@ -1,6 +1,5 @@
 # Automatically generated directories and files
 output
-plugins
 cache
 scenario/ic.scn
 bluesky/resources/grib
@@ -15,6 +14,7 @@ docs/_build/
 
 # virtual environment
 venv
+env
 
 # PyBuilder
 target/
