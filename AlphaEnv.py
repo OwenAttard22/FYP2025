@@ -6,10 +6,12 @@ import json
 import pygame
 import time
 
+DISTANCES = {}
+
 # Constants
 HOST = "127.0.0.1"
 PORT = 8000
-MAX_AGENTS = 18  # Adjust based on scenario
+MAX_AGENTS = 4 # Adjust based on scenario
 # CALLSIGNS = ['HAWK', 'EAGLE', 'FALCON', 'SCORPION', 'VIPER', 'RAVEN', 'PHOENIX', 'SPARROW', 'HORNET', 'PEGASUS', 'TALON', 'GRYPHON', 'WRAITH', 'LIGHTNING', 'DRAGON', 'THUNDERBIRD', 'STORM', 'BLADE']
 
 class AlphaEnv(gym.Env):
@@ -35,9 +37,9 @@ class AlphaEnv(gym.Env):
 
         # Define action space: Discrete or Continuous
         if action_space_type == "discrete":
-            self.action_space = [spaces.Discrete(9) for _ in range(num_agents)]  # [-20, -15, ..., 20]
-        # else:
-        #     self.action_space = [spaces.Box(low=-20, high=20, shape=(1,), dtype=np.float32) for _ in range(num_agents)]
+            self.action_space = [spaces.Discrete(9) for _ in range(num_agents)]  # [-20, -15, -10, -5, 0, 5, 10, 15, 20]
+        else:
+            self.action_space = [spaces.Box(low=-20, high=20, shape=(1,), dtype=np.float32) for _ in range(num_agents)] 
 
         # Define observation space
         self.observation_space = [
@@ -46,11 +48,34 @@ class AlphaEnv(gym.Env):
     
     def reset(self):
         """ Reset the environment and receive the initial state """
+        print("Reset function called")
+        
+        if hasattr(self, 'screen'):
+            pygame.display.quit()
+            pygame.quit()
+        
         self.done_n = [False] * self.num_agents  # Reset done flags
         self.reward_n = [0] * self.num_agents  # Reset reward list
+        self.removed_n = [False] * self.num_agents
+        
         # Reset state
         self.send_action({"reset": True})
+        print("Reset action sent")
         time.sleep(0.5)
+        
+        try:
+            self.client_socket.close()
+            self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.client_socket.connect((HOST, PORT))
+            print("🔄 Reconnected to BlueSky Plugin")
+        except Exception as e:
+            print(f"⚠️ Error reconnecting to BlueSky: {e}")
+        
+        pygame.init()
+        self.screen = pygame.display.set_mode((1000, 800))
+        pygame.display.set_caption("BlueSky ATC - Multi-Agent Environment")
+        self.font = pygame.font.Font(None, 24)
+        
         return self.receive_observations()
 
     def step(self, action_n=None):
@@ -105,6 +130,7 @@ class AlphaEnv(gym.Env):
                 try:
                     observations = json.loads(buffer)
                     # print(f" Observations Received: {list(observations.keys())}")
+                    print("Observations Received", observations)
                     return observations, [self.format_observation(obs) for obs in observations.values()]
                 except json.JSONDecodeError:
                     # print("Incomplete JSON received, waiting for more data...")
@@ -142,6 +168,7 @@ class AlphaEnv(gym.Env):
             - r_r = Reward for reaching the destination
         """
         
+        global DISTANCES
         
         comp_rewards_n = [0] * self.num_agents
 
@@ -154,6 +181,12 @@ class AlphaEnv(gym.Env):
             # print(n1_dist, type(n1_dist))
             # print(n2_dist, type(n2_dist))
             # print(dist_to_wpt, type(dist_to_wpt))
+            
+            if obs == 'FALCON':
+                if obs not in DISTANCES:
+                    DISTANCES[obs] = dist_to_wpt
+                else:
+                    DISTANCES[obs] = min(DISTANCES[obs], dist_to_wpt)
 
             if n1_dist < 10:
                 rc = -1
@@ -173,10 +206,9 @@ class AlphaEnv(gym.Env):
             # if dist_to_wpt < 10:
             #     print(obs, dist_to_wpt)
             
-            if obs == 'LIGHTNING':
-                print("LIGHTNING: ", dist_to_wpt)
             self.done_n[i] = True if (dist_to_wpt < 5) else False
 
+        # print(DISTANCES)
         return comp_rewards_n, self.done_n
 
     def send_action(self, action):
@@ -263,7 +295,7 @@ class AlphaEnv(gym.Env):
         self.running = False
 
 
-def test():
+def run():
     env = AlphaEnv()
     
     while True:
@@ -278,9 +310,35 @@ def test():
             active_planes = sum(not done for done in done_n)
             if active_planes <= 3:
                 print("Epsidoe done, resetting...")
+                env.reset()
                 running = False
                 
     env.close()
     
+
+def test():
+    env = AlphaEnv()
+    
+    test_plane = "LIGHTNING"
+    action_index = 0  # Track action changes
+    discrete_actions = [-20, -15, -10, -5, 0, 5, 10, 15, 20]
+
+    while True:
+        print(f"⏳ Waiting 7 seconds before sending new action...")
+        time.sleep(7)
+
+        # Select an action from the predefined list
+        action_value = discrete_actions[action_index]
+        action_index = (action_index + 1) % len(discrete_actions)
+
+        print(f"🚀 Sending heading change {action_value}° to plane {test_plane}")
+
+        env.send_action({"actions": {test_plane: action_value}})
+
+        obs, reward_n, done_n, _ = env.step()
+
+        env.render(obs)
+    
 if __name__ == "__main__":
-    test()
+    # test()
+    run()

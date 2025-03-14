@@ -221,11 +221,12 @@ class TestAlpha(core.Entity):
         
     def action_reset(self):
         self.planes.clear()
-        stack.stack('QUIT')
+        stack.stack('RESET')
         time.sleep(0.1)
-        # stack.stack("OPEN alpha/train/train_0011")
-        # self.init_planes()
-        self.running = False
+        stack.stack("OPEN alpha/train/train_0011")
+        time.sleep(2)
+        self.init_planes()
+        # self.running = False
 
     def run(self):
         while self.running:
