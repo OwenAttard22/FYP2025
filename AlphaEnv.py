@@ -5,6 +5,7 @@ import socket
 import json
 import pygame
 import time
+from Selector import Select
 
 DISTANCES = {}
 
@@ -19,7 +20,7 @@ class AlphaEnv(gym.Env):
 
     metadata = {"render.modes": ["human"]}
 
-    def __init__(self, num_agents=MAX_AGENTS, action_space_type="discrete"):
+    def __init__(self, num_agents=4, action_space_type="discrete"):
         super(AlphaEnv, self).__init__()
         
         self.num_agents = num_agents
@@ -30,10 +31,19 @@ class AlphaEnv(gym.Env):
         self.removed_n = [False] * self.num_agents # to track if planes have been removed from scenario once landed
         self.reward_n = [0] * self.num_agents
         
-        # Initialize TCP connection to BlueSky plugin
-        self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.client_socket.connect((HOST, PORT))
-        print("Connected to BlueSky Plugin")
+        # Start TCP `Server`
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.server_socket.bind((HOST, PORT))
+        self.server_socket.listen(1)
+        print("Started TCP Server on Port 8000")
+        
+        Select()
+        time.sleep(3)
+        
+        print("Waiting for BlueSky Plugin to connect...")
+        self.conn, self.addr = self.server_socket.accept()
+        print(f"Connected to BlueSky Plugin at {self.addr}")
 
         # Define action space: Discrete or Continuous
         if action_space_type == "discrete":
@@ -61,22 +71,26 @@ class AlphaEnv(gym.Env):
         # Reset state
         self.send_action({"reset": True})
         print("Reset action sent")
-        time.sleep(0.5)
+        time.sleep(5)
         
-        try:
-            self.client_socket.close()
-            self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.client_socket.connect((HOST, PORT))
-            print("🔄 Reconnected to BlueSky Plugin")
-        except Exception as e:
-            print(f"⚠️ Error reconnecting to BlueSky: {e}")
+        Select()
+        time.sleep(5)
+        
+        # Close and re-open connection to plugin
+        self.conn.close()
+        time.sleep(3)
+        self.conn, self.addr = self.server_socket.accept()
+        print(f"Reconnected to BlueSky Plugin at {self.addr}")
+        
+        time.sleep(2)
         
         pygame.init()
         self.screen = pygame.display.set_mode((1000, 800))
         pygame.display.set_caption("BlueSky ATC - Multi-Agent Environment")
         self.font = pygame.font.Font(None, 24)
         
-        return self.receive_observations()
+        # return self.receive_observations()
+        return
 
     def step(self, action_n=None):
         """ Execute a step in the environment with multiple agent actions """
@@ -116,11 +130,14 @@ class AlphaEnv(gym.Env):
         try:
 
             # Set a timeout to prevent blocking indefinitely
-            self.client_socket.settimeout(3.0)
+            # self.client_socket.settimeout(3.0)
+            self.server_socket.settimeout(3.0)
 
             buffer = ""
             while True:
-                chunk = self.client_socket.recv(4096).decode()  # Receive chunk of data
+                # chunk = self.client_socket.recv(4096).decode()  # Receive chunk of data
+                # chunk = self.server_socket.recv(4096).decode()  # Receive chunk of data
+                chunk = self.conn.recv(4096).decode()
 
                 if not chunk:
                     break  # Stop if no more data
@@ -129,8 +146,7 @@ class AlphaEnv(gym.Env):
 
                 try:
                     observations = json.loads(buffer)
-                    # print(f" Observations Received: {list(observations.keys())}")
-                    print("Observations Received", observations)
+                    print("Observations received", observations)
                     return observations, [self.format_observation(obs) for obs in observations.values()]
                 except json.JSONDecodeError:
                     # print("Incomplete JSON received, waiting for more data...")
@@ -176,12 +192,7 @@ class AlphaEnv(gym.Env):
             if obs is None or self.done_n[i]:  # Skip processing if plane is already done
                 continue
             
-            # print("OBS, ", observations[obs])
             lat, lon, heading, dist_to_wpt, qdr_to_wpt, n1_dist, n1_bearing, n2_dist, n2_bearing = observations[obs].values()
-            # print(n1_dist, type(n1_dist))
-            # print(n2_dist, type(n2_dist))
-            # print(dist_to_wpt, type(dist_to_wpt))
-            
             if obs == 'FALCON':
                 if obs not in DISTANCES:
                     DISTANCES[obs] = dist_to_wpt
@@ -192,7 +203,7 @@ class AlphaEnv(gym.Env):
                 rc = -1
                 self.done_n[i] = True
             elif n2_dist < 10:
-                rc = -2
+                rc = -1
                 self.done_n[i] = True
             else:
                 rc = 0
@@ -214,7 +225,9 @@ class AlphaEnv(gym.Env):
     def send_action(self, action):
         """ Sends action data to BlueSky """
         action_data = json.dumps(action) + "\n"
-        self.client_socket.sendall(action_data.encode())
+        # self.client_socket.sendall(action_data.encode())
+        self.conn.sendall(action_data.encode())
+        
 
     def render(self, observations, mode='human'):
         """ Render aircraft positions and relevant information on a 2D Pygame map """
@@ -305,15 +318,19 @@ def run():
         running  = True
         
         while running:
+            print("⚠️ Starting new episode...")
             obs, reward_n, done_n, _ = env.step()
             env.render(obs)
             active_planes = sum(not done for done in done_n)
             if active_planes <= 3:
                 print("Epsidoe done, resetting...")
                 env.reset()
-                running = False
+                print("Reset done")
+                # running = False
                 
-    env.close()
+        print("⚠️ ERORR!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                
+    # env.close()
     
 
 def test():
