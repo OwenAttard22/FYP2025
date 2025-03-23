@@ -7,6 +7,8 @@ from geopy.distance import geodesic
 import math
 import socket, json
 from haversine import haversine, Unit
+import sys
+# from bluesky import bs
 
 HOST = "127.0.0.1"
 PORT = 8000
@@ -44,9 +46,9 @@ def init_plugin():
     }
 
     plugin_instance = TestAlpha()
-    server_thread = threading.Thread(target=plugin_instance.start_server)
-    server_thread.start()
-    run_thread = threading.Thread(target=plugin_instance.run)
+    # server_thread = threading.Thread(target=plugin_instance.manage_connection)
+    # server_thread.start()
+    run_thread = threading.Thread(target=plugin_instance.run, daemon=True)
     run_thread.start()
 
     return config
@@ -80,63 +82,97 @@ class TestAlpha(core.Entity):
         self.init_planes()
         
         self.running = True
+        self.socket = None
         
-        self.server_thread = threading.Thread(target=self.start_server)
-        self.server_thread.daemon = True
-        self.server_thread.start()
+        self.connection = threading.Thread(target=self.manage_connection, daemon=True)
+        self.connection.start()
+        
+        # self.server_thread = threading.Thread(target=self.start_server)
+        # self.server_thread.daemon = True
+        # self.server_thread.start()
 
-    def start_server(self):
-        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server_socket.bind((HOST, PORT))
-        server_socket.listen(1)
+    def manage_connection(self):
+        """Handles connecting to Gym Environment and processing data."""
+        retry_count = 1
+        max_retries = 5
 
-        print(f"Server started on {HOST}:{PORT}, waiting for a connection...")
-
-        conn, addr = server_socket.accept()
-        print(f"Connected to {addr}")
-
-        while True:
+        while self.running:
             try:
-                data = conn.recv(4096).decode()
-                if not data:
-                    continue
-                
-                split_data = data.split("\n")
-                split_data = [msg.strip() for msg in split_data if msg.strip()]
-                for split in split_data:
-                    message = json.loads(split)
+                print(f"🔄 Connecting to environment at {HOST}:{PORT}... ({retry_count}/{max_retries})")
+                self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.socket.connect((HOST, PORT))
+                print("✅ Connected to environment!")
 
-                    if "reset" in message and message["reset"] is True:
-                        print("Received reset command from Gym. Resetting environment...")
-                        self.action_reset()
+                while self.running:
+                    try:
+                        buffer = self.socket.recv(4096).decode()
+                        if not buffer:
+                            print("⚠️ No data received. Closing connection.")
+                            break  
 
-                    if "actions" in message:
-                        self.action_apply_action(message["actions"])
+                        messages = buffer.strip().split("\n")
+                        for msg in messages:
+                            try:
+                                message = json.loads(msg)
 
-                    if "done_planes" in message:
-                        for plane_id in message["done_planes"]:
-                            print(f"❌ To remove {plane_id}")
-                            self.action_plane_done(plane_id)
+                                if message.get("reset"):
+                                    print("🔄 Received reset command. Stopping thread...")
+                                    self.action_reset()
 
-                    if "type" in message and message["type"] == "observations":
-                        observations = {
-                            plane_id: {
-                                "lat": plane.lat,
-                                "long": plane.long,
-                                "heading": plane.heading,
-                                "dist_to_wpt": plane.dist_to_waypoint,
-                                "qdr_to_wpt": plane.qdr_to_waypoint,
-                                "neighbour1_dist": plane.neighbours[1],
-                                "neighbour1_bearing": plane.neighbours[2],
-                                "neighbour2_dist": plane.neighbours[4],
-                                "neighbour2_bearing": plane.neighbours[5],
-                            } for plane_id, plane in self.planes.items()
-                        }
-                        conn.sendall(json.dumps(observations).encode())
+                                elif "actions" in message:
+                                    self.action_apply_action(message["actions"])
 
-            except Exception as e:
-                print(f"Error in TCP communication: {e}")
+                                elif "done_planes" in message:
+                                    for plane_id in message["done_planes"]:
+                                        print(f"❌ Removing {plane_id}")
+                                        self.action_plane_done(plane_id)
+
+                                elif message.get("type") == "observations":
+                                    self.send_observations()
+
+                            except json.JSONDecodeError:
+                                print("⚠️ Invalid JSON received. Skipping...")
+
+                    except socket.error as e:
+                        print(f"⚠️ Connection error while receiving data: {e}")
+                        break  
+
+                retry_count = 1  
+
+            except socket.error as e:
+                print(f"⚠️ Connection failed: {e}. Retrying in 3 seconds...")
+                retry_count += 1
+                if retry_count > max_retries:
+                    print("🛑 Maximum retries reached. Stopping plugin.")
+                    self.running = False
+                    stack.stack("QUIT")
+                time.sleep(3)
+
+        print("🔄 Exiting connection thread.")
+            
+    def send_observations(self):
+        """ Sends current aircraft observations to Gym """
+        try:
+            observations = {
+                plane_id: {
+                    "lat": plane.lat,
+                    "long": plane.long,
+                    "heading": plane.heading,
+                    "dist_to_wpt": plane.dist_to_waypoint,
+                    "qdr_to_wpt": plane.qdr_to_waypoint,
+                    "neighbour1_dist": plane.neighbours[1],
+                    "neighbour1_bearing": plane.neighbours[2],
+                    "neighbour2_dist": plane.neighbours[4],
+                    "neighbour2_bearing": plane.neighbours[5],
+                } for plane_id, plane in self.planes.items()
+            }
+            # print(observations)
+            message = json.dumps(observations) + "\n"
+            self.socket.sendall(message.encode())
+        except socket.error:
+            print("⚠️ Connection error while sending observations. Reconnecting...")
+            self.manage_connection()
+
 
     def init_planes(self):
         for plane_id in traf.id:
@@ -218,40 +254,95 @@ class TestAlpha(core.Entity):
     #     time.sleep(0.1)
     #     stack.stack("OPEN alpha/train/train_0011")
     #     self.init_planes()
+    
+    def action_plane_done(self, plane_id):
+        if plane_id in self.planes:
+            print("Attempting to delete plane, ", plane_id)
+            stack.stack(f"DEL {plane_id}")
+            del self.planes[plane_id]
         
     def action_reset(self):
-        self.planes.clear()
-        stack.stack('RESET')
-        time.sleep(0.1)
-        stack.stack("OPEN alpha/train/train_0011")
-        time.sleep(2)
-        self.init_planes()
-        # self.running = False
+        """Gracefully stop all threads and exit the program."""
+        stack.stack(f"RESET")
+        print("Bluesky reset")
+        # Send QUIT command to BlueSky
+        stack.stack(f"QUIT")
+        print("Bluesky quit")
+
+        # Stop all running loops
+        self.running = False  
+
+        # Close socket to force exit from recv()
+        if self.socket:
+            try:
+                self.socket.shutdown(socket.SHUT_RDWR)
+                self.socket.close()
+            except Exception as e:
+                print(f"⚠️ Error closing socket: {e}")
+
+        # List active threads before joining
+        print(f"⚠️ Active threads before join: {threading.enumerate()}")
+
+        # Ensure manage_connection exits cleanly **without joining itself**
+        if threading.current_thread() is not self.connection and hasattr(self, "connection"):
+            if self.connection.is_alive():
+                print("🔴 Stopping manage_connection thread...")
+                self.connection.join(timeout=3)
+
+        # Ensure run_thread exits cleanly
+        if hasattr(self, "run_thread") and threading.current_thread() is not self.run_thread:
+            if self.run_thread.is_alive():
+                print("🔴 Stopping run thread...")
+                self.run_thread.join(timeout=3)
+
+        # List active threads after joining
+        print(f"⚠️ Active threads after join: {threading.enumerate()}")
+
+        time.sleep(1)
+
+        print("🛑 Exiting program...")
+
+        # Try normal exit
+        sys.exit(0)
+
+        # If sys.exit() fails, force terminate the process
+        os._exit(1)
+
+        
+        # try:
+        #     status = {"status": "closed"}
+        #     message = json.dumps(status) + "\n"
+        #     self.socket.sendall(message.encode())
+        #     sys.exit(0)
+        # except socket.error:
+        #     print("⚠️ Connection error while sending closed status message.")
+        
+    # def action_reset(self):
+    #     self.planes.clear()
+    #     stack.stack('RESET')
+    #     time.sleep(0.5)
+        
+    #     stack.stack("OPEN alpha/train/train_0011")
+    #     time.sleep(2)
+    #     # self.manage_connection()
+        
+    #     # self.init_planes()
+        
+    #     self.running = False
 
     def run(self):
         while self.running:
             self.update()
             # time.sleep(0.1)
-
-        self.stop()
         
     def stop(self):
         """Gracefully stop the plugin and cleanup resources."""
         print("Stopping plugin...")
 
-        # Set running flag to False to stop threads
-        self.running = False
-
         # Close the socket server
         try:
-            self.server_socket.close()
+            self.socket.close()
         except Exception as e:
             print(f"Error closing socket: {e}")
-
-        # Wait for threads to terminate
-        if self.server_thread.is_alive():
-            self.server_thread.join()
-        if self.update_thread.is_alive():
-            self.update_thread.join()
 
         print("Plugin stopped successfully.")

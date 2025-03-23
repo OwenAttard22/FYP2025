@@ -25,25 +25,26 @@ class AlphaEnv(gym.Env):
         
         self.num_agents = num_agents
         self.action_space_type = action_space_type
-        self.running = True  # To control execution loop
+        self.running = False
         
         self.done_n = [False] * self.num_agents
         self.removed_n = [False] * self.num_agents # to track if planes have been removed from scenario once landed
         self.reward_n = [0] * self.num_agents
         
-        # Start TCP `Server`
+        # Normalisation Constants
+        self.lat_max = 40.06
+        self.lat_min = 33.62
+        self.lon_max = 21.87
+        self.lon_min = 7.97
+        self.dist_max = 1500
+        self.dist_min = 0
+        
+        # Start TCP Server
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_socket.bind((HOST, PORT))
         self.server_socket.listen(1)
         print("Started TCP Server on Port 8000")
-        
-        Select()
-        time.sleep(3)
-        
-        print("Waiting for BlueSky Plugin to connect...")
-        self.conn, self.addr = self.server_socket.accept()
-        print(f"Connected to BlueSky Plugin at {self.addr}")
 
         # Define action space: Discrete or Continuous
         if action_space_type == "discrete":
@@ -60,28 +61,45 @@ class AlphaEnv(gym.Env):
         """ Reset the environment and receive the initial state """
         print("Reset function called")
         
-        if hasattr(self, 'screen'):
-            pygame.display.quit()
-            pygame.quit()
+        if not self.running:
+            print("Not running, starting BlueSky Plugin...")
         
-        self.done_n = [False] * self.num_agents  # Reset done flags
-        self.reward_n = [0] * self.num_agents  # Reset reward list
-        self.removed_n = [False] * self.num_agents
+            Select()
+            time.sleep(3)
+            
+            print("Waiting for BlueSky Plugin to connect...")
+            self.conn, self.addr = self.server_socket.accept()
+            print(f"Connected to BlueSky Plugin at {self.addr}")
+            
+            self.running = True
         
-        # Reset state
-        self.send_action({"reset": True})
-        print("Reset action sent")
-        time.sleep(5)
+        else:
+            print("Environment already running, resetting...")
         
-        Select()
-        time.sleep(5)
-        
-        # Close and re-open connection to plugin
-        self.conn.close()
-        time.sleep(3)
-        self.conn, self.addr = self.server_socket.accept()
-        print(f"Reconnected to BlueSky Plugin at {self.addr}")
-        
+            if hasattr(self, 'screen'):
+                pygame.display.quit()
+                pygame.quit()
+            
+            self.done_n = [False] * self.num_agents  # Reset done flags
+            self.reward_n = [0] * self.num_agents  # Reset reward list
+            self.removed_n = [False] * self.num_agents
+            
+            # Reset state
+            self.send_action({"reset": True})
+            print("Reset action sent")
+            time.sleep(5)
+            
+            Select()
+            time.sleep(5)
+            
+            # Close and re-open connection to plugin
+            self.conn.close()
+            time.sleep(5)
+            self.conn, self.addr = self.server_socket.accept()
+            print(f"Reconnected to BlueSky Plugin at {self.addr}")
+            
+            self.running = True
+            
         time.sleep(2)
         
         pygame.init()
@@ -89,8 +107,9 @@ class AlphaEnv(gym.Env):
         pygame.display.set_caption("BlueSky ATC - Multi-Agent Environment")
         self.font = pygame.font.Font(None, 24)
         
-        # return self.receive_observations()
-        return
+        self.send_action({"type": "observations"})
+        return self.receive_observations()
+        # return
 
     def step(self, action_n=None):
         """ Execute a step in the environment with multiple agent actions """
@@ -122,7 +141,7 @@ class AlphaEnv(gym.Env):
             # print("Done Planes: ", done_planes)
             self.send_action({"done_planes": done_planes})
         
-        return observations, self.reward_n, self.done_n, {}
+        return observations, formatted_obs, self.reward_n, self.done_n, {}
 
     def receive_observations(self):
         """ Requests and Receives aircraft data from the BlueSky plugin """
@@ -146,8 +165,10 @@ class AlphaEnv(gym.Env):
 
                 try:
                     observations = json.loads(buffer)
-                    print("Observations received", observations)
-                    return observations, [self.format_observation(obs) for obs in observations.values()]
+                    # print("Observations received", observations)
+                    formatted = [self.format_observation(obs) for obs in observations.values()]
+                    # print(formatted)
+                    return observations, formatted
                 except json.JSONDecodeError:
                     # print("Incomplete JSON received, waiting for more data...")
                     continue  # Wait for more data to complete JSON
@@ -165,15 +186,15 @@ class AlphaEnv(gym.Env):
     def format_observation(self, obs):
         """ Convert observation JSON into numpy array """
         return np.array([
-            obs["lat"], 
-            obs["long"], 
-            obs["heading"], 
-            obs["dist_to_wpt"], 
-            obs["qdr_to_wpt"],
-            obs["neighbour1_dist"], 
-            obs["neighbour1_bearing"], 
-            obs["neighbour2_dist"], 
-            obs["neighbour2_bearing"]
+            ((obs["lat"] - self.lat_min)/(self.lat_max - self.lat_min)),  # normalise latitude
+            ((obs["long"] - self.lon_min)/(self.lon_max - self.lon_min)),  # normalise longitude
+            ((obs["heading"] - 0)/(360 - 0)),  # normalise heading 
+            ((obs["dist_to_wpt"] - self.dist_min)/(self.dist_max - self.dist_min)), # normalise distance
+            ((obs["qdr_to_wpt"] - 0)/(360 - 0)),  # normalise bearing
+            ((obs["neighbour1_dist"] - self.dist_min)/(self.dist_max - self.dist_min)),
+            ((obs["neighbour1_bearing"] - 0)/(360 - 0)),
+            ((obs["neighbour2_dist"] - self.dist_min)/(self.dist_max - self.dist_min)),
+            ((obs["neighbour2_bearing"] - 0)/(360 - 0))
         ], dtype=np.float32)
 
     def compute_rewards(self, observations):
@@ -252,8 +273,8 @@ class AlphaEnv(gym.Env):
             """ Convert real-world coordinates to screen space """
             lat = float(lat)
             lon = float(lon)
-            MAP_TOP_LEFT = (40.0, 7.0)  # (Max Lat, Min Lon)
-            MAP_BOTTOM_RIGHT = (33.0, 22.0)  # (Min Lat, Max Lon)
+            MAP_TOP_LEFT = (40.06, 7.97)  # (Max Lat, Min Lon)
+            MAP_BOTTOM_RIGHT = (33.62, 21.87)  # (Min Lat, Max Lon)
             SCREEN_WIDTH, SCREEN_HEIGHT = 1000, 800  # Match Pygame screen size
             x = int((lon - MAP_TOP_LEFT[1]) / (MAP_BOTTOM_RIGHT[1] - MAP_TOP_LEFT[1]) * SCREEN_WIDTH)
             y = int((MAP_TOP_LEFT[0] - lat) / (MAP_TOP_LEFT[0] - MAP_BOTTOM_RIGHT[0]) * SCREEN_HEIGHT)
@@ -304,8 +325,26 @@ class AlphaEnv(gym.Env):
     
     def close(self):
         """ Close the environment and terminate the connection """
-        self.client_socket.close()
+        
+        if hasattr(self, 'screen'):
+                pygame.display.quit()
+                pygame.quit()
+            
+        self.done_n = [False] * self.num_agents  # Reset done flags
+        self.reward_n = [0] * self.num_agents  # Reset reward list
+        self.removed_n = [False] * self.num_agents
+        
+        # Reset state
+        self.send_action({"reset": True})
+        print("Reset action sent")
+        time.sleep(5)
+        
+        # Close and re-open connection to plugin
+        self.conn.close()
+        
         self.running = False
+        self.server_socket.close()
+        print("Environment closed")
 
 
 def run():
