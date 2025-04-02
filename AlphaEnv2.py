@@ -38,7 +38,6 @@ class AlphaEnv(MultiAgentEnv):
         # Start TCP Server
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_socket.bind((HOST, PORT))
         self.server_socket.listen(1)
         print("Started TCP Server on Port 8000")
@@ -47,7 +46,7 @@ class AlphaEnv(MultiAgentEnv):
             agent_id: spaces.Box(low=-np.inf, high=np.inf, shape=(9,), dtype=np.float32)
             for agent_id in self.agents
         }
-          
+
         self.action_spaces = {
             agent_id: spaces.Discrete(9)
             for agent_id in self.agents
@@ -91,6 +90,7 @@ class AlphaEnv(MultiAgentEnv):
             print("Reset action sent")
             time.sleep(5)
             
+            print("Called new scenario")
             Select()
             time.sleep(5)
             
@@ -122,9 +122,9 @@ class AlphaEnv(MultiAgentEnv):
         
         self.reward_dict = {agent_id: 0 for agent_id in self.agents} # reset reward list
         
-        for agent, action in action_dict.items():
-            print("Agent: ", agent, type(agent))
-            print("Action: ", action, type(action))
+        # for agent, action in action_dict.items():
+        #     print("Agent: ", agent, type(agent))
+        #     print("Action: ", action, type(action))
     
         self.send_action({"actions": action_dict})
             
@@ -244,23 +244,21 @@ class AlphaEnv(MultiAgentEnv):
         temp_rewards_dict = {agent_id: 0 for agent_id in self.agents}
         
         for agent, obs in observations.items():
-            print("Agent: ", agent)
-            print("Observation: ", obs)
+            # print("Agent: ", agent)
+            # print("Observation: ", obs)
             
             if self.done_dict[agent] or obs is None:
                 continue
             
             lat, lon, heading, dist_to_wpt, qdr_to_wpt, n1_dist, n1_bearing, n2_dist, n2_bearing = obs
             
-            if n1_dist < rc_dist and n2_dist < rc_dist:
-                r_c = -2
-                self.done_dict[agent] = True
-            elif n1_dist < rc_dist:
+            crashed = False
+            landed = False
+            
+            if n1_dist < rc_dist or n2_dist < rc_dist:
                 r_c = -1
                 self.done_dict[agent] = True
-            elif n2_dist < rc_dist:
-                r_c = -1
-                self.done_dict[agent] = True
+                crashed = True
             else:
                 r_c = 0
                 
@@ -279,9 +277,18 @@ class AlphaEnv(MultiAgentEnv):
             else:
                 r_a2 = 0
             
-            temp_rewards_dict[agent] = r_c + r_a1 + r_t + r_r + r_a2
-            
-            self.done_dict[agent] = True if (dist_to_wpt < rr_dist) else False
+            if dist_to_wpt < rr_dist:
+                landed = True
+                self.done_dict[agent] = True
+            else:
+                landed = False
+                
+            if crashed:
+                temp_rewards_dict[agent] = -1
+            elif landed:
+                temp_rewards_dict[agent] = 1
+            else:
+                temp_rewards_dict[agent] = r_c + r_a1 + r_t + r_r + r_a2
             
         return temp_rewards_dict, self.done_dict
 
