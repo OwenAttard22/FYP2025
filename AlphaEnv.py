@@ -118,7 +118,7 @@ class AlphaEnv(gym.Env):
         
         # Receive new observations
         observations, formatted_obs = self.receive_observations()
-        # print(formatted_obs)
+        print(formatted_obs)
         callsigns = list(observations.keys())
         # print("Callsigns: ", callsigns)
         
