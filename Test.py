@@ -1,105 +1,59 @@
-'''
-    Example external client for BlueSky.
+from ray.rllib.algorithms.ppo import PPOConfig
+from ray.rllib.models import ModelCatalog
+from CentralisedCritic import CCPPOPolicy, CentralisedLSTMModel
+from gymnasium import spaces
+import numpy as np
+from AlphaEnv2 import AlphaEnv
+from ray.tune.registry import register_env
+from Callbacks import MyCallbacks
 
-    When you run this file, make sure python knows where to find BlueSky:
+ModelCatalog.register_custom_model("My_CC_LSTM_PPO", CentralisedLSTMModel)
 
-    PYTHONPATH=/path/to/your/bluesky python textclient.py
-'''
-try:
-    from PyQt5.QtCore import Qt, QTimer
-    from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QTextEdit
-except ImportError:
-    from PyQt6.QtCore import Qt, QTimer
-    from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QTextEdit
+observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(9,), dtype=np.float32)
+action_space = spaces.Discrete(9)
 
-from bluesky.network.client import Client
+register_env("AlphaEnv", lambda config: AlphaEnv(config))
 
+config = (
+    PPOConfig()
+    .environment(env="AlphaEnv", env_config={})
+    .framework("torch")
+    .env_runners(num_env_runners=0)
+    .callbacks(MyCallbacks)
+    .training(
+        gamma=0.99,
+        lr=1e-4,
+        clip_param=0.2,
+        train_batch_size=300,
+        # batch_mode="complete_episodes",
+        model={
+            "custom_model": "My_CC_LSTM_PPO",
+            "max_seq_len": 20,
+            "use_lstm": True, 
+            "lstm_use_prev_action_reward": True,
+            "opponent_action_dim": 3,
+        }
+    )
+    .multi_agent(
+        policies={
+            "shared_policy": (
+                CCPPOPolicy,
+                observation_space,
+                action_space,
+                {},
+            )
+        },
+        policy_mapping_fn=lambda agent_id, *args, **kwargs: "shared_policy",
+    )
+    .resources(num_gpus=1)
+    .experimental(_validate_config=False)
+)
 
-# The echo textbox, command line, and bluesky network client as globals
-echobox = None
-cmdline = None
-bsclient = None
+config.batch_mode = "complete_episodes"
+trainer = config.build()
 
-
-class TextClient(Client):
-    '''
-        Subclassed Client with a timer to periodically check for incoming data,
-        an overridden event function to handle data, and a stack function to
-        send stack commands to BlueSky.
-    '''
-    def __init__(self):
-        super().__init__()
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.update)
-        self.timer.start(20)
-
-    def event(self, name, data, sender_id):
-        ''' Overridden event function to handle incoming ECHO commands. '''
-        if name == b'ECHO' and echobox is not None:
-            echobox.echo(**data)
-
-    def stack(self, text):
-        ''' Stack function to send stack commands to BlueSky. '''
-        self.send_event(b'STACK', text)
-
-    def echo(self, text, flags=None, sender_id=None):
-        ''' Overload Client's echo function. '''
-        if echobox is not None:
-            echobox.echo(text, flags)
-
-
-class Echobox(QTextEdit):
-    ''' Text box to show echoed text coming from BlueSky. '''
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setMinimumHeight(150)
-        self.setReadOnly(True)
-        # self.setFocusPolicy(Qt.NoFocus)
-
-    def echo(self, text, flags=None):
-        ''' Add text to this echo box. '''
-        self.append(text)
-        self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
-
-
-class Cmdline(QTextEdit):
-    ''' Wrapper class for the command line. '''
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setMaximumHeight(21)
-        # self.setFocusPolicy(Qt.StrongFocus)
-        # self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-
-    def keyPressEvent(self, event):
-        ''' Handle Enter keypress to send a command to BlueSky. '''
-        if event.key() == Qt.Key.Key_Enter or event.key() == Qt.Key.Key_Return:
-            if bsclient is not None:
-                bsclient.stack(self.toPlainText())
-                echobox.echo(self.toPlainText())
-            self.setText('')
-        else:
-            super().keyPressEvent(event)
-
-
-if __name__ == '__main__':
-    # Construct the Qt main object
-    app = QApplication([])
-
-    # Create a window with a stack text box and a command line
-    win = QWidget()
-    win.setWindowTitle('Example external client for BlueSky')
-    layout = QVBoxLayout()
-    win.setLayout(layout)
-
-    echobox = Echobox(win)
-    cmdline = Cmdline(win)
-    layout.addWidget(echobox)
-    layout.addWidget(cmdline)
-    win.show()
-
-    # Create and start BlueSky client
-    bsclient = TextClient()
-    bsclient.connect(event_port=11000, stream_port=11001)
-
-    # Start the Qt main loop
-    app.exec()
+for i in range(5):  # Start with 5 quick iterations
+    print(f"🔁 Iteration {i}")
+    result = trainer.train()
+    print(result)
+    print("-" * 40)
