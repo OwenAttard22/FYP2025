@@ -38,6 +38,18 @@ DESTINATIONS = {
     "BLADE": [LICC_LAT, LICC_LONG],
 }
 
+ACTIONS ={
+    0: -20,
+    1: -15,
+    2: -10,
+    3: -5,
+    4: 0,
+    5: 5,
+    6: 10,
+    7: 15,
+    8: 20
+}
+
 def init_plugin():
     """ Initialization function for the test plugin. """
     config = {
@@ -230,12 +242,12 @@ class TestAlpha(core.Entity):
                 neighbour2, dist2, bearing2 = distances[1]
             elif len(distances) == 1:
                 try:
-                    neighbour1, dist1 = distances[0]
-                    neighbour2, dist2 = None, None
+                    neighbour1, dist1, bearing1 = distances[0]
+                    neighbour2, dist2, bearing2 = None, None, None
                 except:
-                    neighbour1, dist1, neighbour2, dist2 = None, None, None, None
+                    neighbour1, dist1, bearing1, neighbour2, dist2, bearing2 = None, None, None, None, None, None
             else:
-                neighbour1, dist1, neighbour2, dist2 = None, None, None, None
+                neighbour1, dist1, bearing1, neighbour2, dist2, bearing2 = None, None, None, None, None, None
                 
             if plane_id in self.planes:
                 self.planes[plane_id].update_neighbours(neighbour1, dist1, bearing1, neighbour2, dist2, bearing2)
@@ -244,9 +256,9 @@ class TestAlpha(core.Entity):
     def action_apply_action(self, actions):
         for plane_id, action in actions.items():
             if plane_id in self.planes:
-                new_heading = (self.planes[plane_id].heading + action) % 360
+                new_heading = (self.planes[plane_id].heading + ACTIONS[action]) % 360
                 stack.stack(f"{plane_id} HDG {new_heading}")
-                stack.stack(f"DELAY 00:02:00 {plane_id} LNAV ON")
+                # stack.stack(f"DELAY 00:02:00 {plane_id} LNAV ON")
 
     # def action_reset(self):
     #     self.planes.clear()
