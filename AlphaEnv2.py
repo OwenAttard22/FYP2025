@@ -21,11 +21,17 @@ class AlphaEnv(MultiAgentEnv):
         super().__init__()
         
         self.agents = self.possible_agents = ["EAGLE", "FALCON", "SCORPION", "HAWK"]
+        # self.agents = self.possible_agents = ['HAWK', 'EAGLE', 'FALCON', 'SCORPION', 'VIPER', 'RAVEN', 'PHOENIX', 'SPARROW', 'HORNET', 'PEGASUS', 'TALON', 'GRYPHON', 'WRAITH', 'LIGHTNING', 'DRAGON', 'THUNDERBIRD', 'STORM', 'BLADE']
         self.running = False
         
         self.done_dict = {agent_id: False for agent_id in self.agents}  # Done flags for each agent
         self.removed_dict = {agent_id: False for agent_id in self.agents} # to track if planes have been removed from scenario once landed
         self.reward_dict = {agent_id: 0 for agent_id in self.agents}
+        
+        # Counters
+        self.landed = 0
+        self.collided = 0
+        self.outsided = 0
         
         # Normalisation Constants
         self.lat_max = 40.06
@@ -48,7 +54,7 @@ class AlphaEnv(MultiAgentEnv):
         }
 
         self.action_spaces = {
-            agent_id: spaces.Discrete(9)
+            agent_id: spaces.Discrete(9) # 
             for agent_id in self.agents
         }
     
@@ -85,6 +91,10 @@ class AlphaEnv(MultiAgentEnv):
             self.reward_dict = {agent_id: 0 for agent_id in self.agents}
             self.removed_dict = {agent_id: False for agent_id in self.agents}
             
+            self.landed = 0
+            self.collided = 0
+            self.outsided = 0
+            
             # Reset state
             self.send_action({"reset": True})
             print("Reset action sent")
@@ -120,6 +130,8 @@ class AlphaEnv(MultiAgentEnv):
         
         action_dict = {agent: int(action) for agent, action in action_dict.items()}
         
+        # print(action_dict)
+        
         self.reward_dict = {agent_id: 0 for agent_id in self.agents} # reset reward list
         
         # for agent, action in action_dict.items():
@@ -127,7 +139,8 @@ class AlphaEnv(MultiAgentEnv):
         #     print("Action: ", action, type(action))
     
         self.send_action({"actions": action_dict})
-            
+        
+        time.sleep(1)
         
         self.send_action({"type": "observations"})
         time.sleep(0.1)
@@ -148,6 +161,7 @@ class AlphaEnv(MultiAgentEnv):
             self.send_action({"done_planes": new_done_planes})
             
         self.done_dict["__all__"] = sum(self.done_dict[agent] for agent in self.agents) >= len(self.agents) - 3
+        # self.done_dict["__all__"] = all(self.done_dict[agent] for agent in self.agents)
             
         truncated_dict = {agent_id: False for agent_id in self.agents} # empty
         truncated_dict["__all__"] = False
@@ -201,8 +215,12 @@ class AlphaEnv(MultiAgentEnv):
         elif type == "long":
             return (value - self.lon_min) / (self.lon_max - self.lon_min)
         elif type == "dist":
+            if value is None:
+                return 1000
             return (value - self.dist_min) / (self.dist_max - self.dist_min)
         elif type == "hdg":
+            if value is None:
+                return 0
             return (value - 0) / (360 - 0)
         else:
             raise ValueError("Unknown normalisation type")
@@ -254,6 +272,7 @@ class AlphaEnv(MultiAgentEnv):
             
             crashed = False
             landed = False
+            outside = False
             
             if n1_dist < rc_dist or n2_dist < rc_dist:
                 r_c = -1
@@ -272,7 +291,8 @@ class AlphaEnv(MultiAgentEnv):
                 r_r = 0
                 
             if self._outside_airspace(lat, lon):
-                r_a2 = -1
+                r_a2 = -0.5
+                outside = True
                 self.done_dict[agent] = True
             else:
                 r_a2 = 0
@@ -284,9 +304,14 @@ class AlphaEnv(MultiAgentEnv):
                 landed = False
                 
             if crashed:
-                temp_rewards_dict[agent] = -1
+                temp_rewards_dict[agent] = r_c
+                self.collided += 1
             elif landed:
-                temp_rewards_dict[agent] = 1
+                temp_rewards_dict[agent] = r_r
+                self.landed += 1
+            elif outside:
+                temp_rewards_dict[agent] = r_a2
+                self.outsided += 1
             else:
                 temp_rewards_dict[agent] = r_c + r_a1 + r_t + r_r + r_a2
             
@@ -390,13 +415,17 @@ class AlphaEnv(MultiAgentEnv):
 def run():
     env = AlphaEnv()
     obs, _ = env.reset()
+    
+    time.sleep(5)
+    
     done = {"__all__": False}
     step_count = 0
 
     while not done["__all__"]:
         # Sample a random action for each active agent
         action_dict = {
-            agent: env.action_spaces[agent].sample()
+            # agent: env.action_spaces[agent].sample()
+            agent: 0
             for agent in obs
         }
 
