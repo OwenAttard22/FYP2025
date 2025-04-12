@@ -6,13 +6,20 @@ import numpy as np
 from AlphaEnv2 import AlphaEnv
 from ray.tune.registry import register_env
 from Callbacks import MyCallbacks
+import os
 
+# Register custom model
 ModelCatalog.register_custom_model("My_CC_LSTM_PPO", CentralisedLSTMModel)
 
 observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(9,), dtype=np.float32)
 action_space = spaces.Discrete(9)
 
+# Register AlphaEnv
 register_env("AlphaEnv", lambda config: AlphaEnv(config))
+
+# Checkpoint
+checkpoint_path = os.path.abspath("./checkpoints/Alpha/")
+os.makedirs(checkpoint_path, exist_ok=True)
 
 config = (
     PPOConfig()
@@ -49,11 +56,34 @@ config = (
     .experimental(_validate_config=False)
 )
 
+def main():
+    config.batch_mode = "complete_episodes"
+    trainer = config.build()
+
+    for i in range(5):  # Start with 5 quick iterations
+        print(f"🔁 Iteration {i}")
+        result = trainer.train()
+        print(result)
+        print("-" * 40)
+        
+        # save checkpoint
+        checkpoint_path = trainer.save_to_path(checkpoint_path)
+        print(f"Checkpoint saved at {checkpoint_path}")
+        print("-" * 40)
+        
 config.batch_mode = "complete_episodes"
 trainer = config.build()
+trainer.restore_from_path(checkpoint_path)
+print("Checkpoint restored from", checkpoint_path)
 
-for i in range(5):  # Start with 5 quick iterations
+for i in range(3):
     print(f"🔁 Iteration {i}")
     result = trainer.train()
     print(result)
     print("-" * 40)
+    
+    # save checkpoint
+    checkpoint_path = trainer.save_to_path(checkpoint_path)
+    print(f"Checkpoint saved at {checkpoint_path}")
+    print("-" * 40)
+    
