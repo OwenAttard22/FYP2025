@@ -2,7 +2,7 @@ import numpy as np
 from gymnasium import spaces
 import socket
 import json
-import pygame
+# import pygame
 import time
 from Selector import Select
 
@@ -83,9 +83,9 @@ class AlphaEnv(MultiAgentEnv):
         else:
             print("Environment already running, resetting...")
         
-            if hasattr(self, 'screen'):
-                pygame.display.quit()
-                pygame.quit()
+            # if hasattr(self, 'screen'):
+            #     pygame.display.quit()
+            #     pygame.quit()
             
             self.done_dict = {agent_id: False for agent_id in self.agents}  # Reset done flags
             self.reward_dict = {agent_id: 0 for agent_id in self.agents}
@@ -115,10 +115,10 @@ class AlphaEnv(MultiAgentEnv):
             
         time.sleep(2)
         
-        pygame.init()
-        self.screen = pygame.display.set_mode((1000, 800))
-        pygame.display.set_caption("BlueSky ATC - Multi-Agent Environment")
-        self.font = pygame.font.Font(None, 24)
+        # pygame.init()
+        # self.screen = pygame.display.set_mode((1000, 800))
+        # pygame.display.set_caption("BlueSky ATC - Multi-Agent Environment")
+        # self.font = pygame.font.Font(None, 24)
         
         self.send_action({"type": "observations"})
         
@@ -215,6 +215,7 @@ class AlphaEnv(MultiAgentEnv):
         elif type == "long":
             return (value - self.lon_min) / (self.lon_max - self.lon_min)
         elif type == "dist":
+            # print(value)
             if value is None:
                 return 1000
             return (value - self.dist_min) / (self.dist_max - self.dist_min)
@@ -323,82 +324,85 @@ class AlphaEnv(MultiAgentEnv):
         # self.client_socket.sendall(action_data.encode())
         self.conn.sendall(action_data.encode())
 
-    def render(self, observations, mode='human'):
-        """ Render aircraft positions and relevant information on a 2D Pygame map """
+    # def render(self, observations, mode='human'):
+    #     """ Render aircraft positions and relevant information on a 2D Pygame map """
 
-        if not hasattr(self, 'screen'):  # Initialize Pygame only if not already done
-            pygame.init()
-            self.screen = pygame.display.set_mode((1000, 800))  # Set screen size
-            pygame.display.set_caption("BlueSky ATC - Multi-Agent Environment")
-            self.font = pygame.font.Font(None, 24)
+    #     if not hasattr(self, 'screen'):  # Initialize Pygame only if not already done
+    #         pygame.init()
+    #         self.screen = pygame.display.set_mode((1000, 800))  # Set screen size
+    #         pygame.display.set_caption("BlueSky ATC - Multi-Agent Environment")
+    #         self.font = pygame.font.Font(None, 24)
 
-        self.screen.fill((30, 30, 30))  # Dark background
+    #     self.screen.fill((30, 30, 30))  # Dark background
 
-        # Define Fixed Airports (Reference Points)
-        airports = {
-            "LMML": (35.8575, 14.4775),  # Malta
-            "LICJ": (38.1864, 13.0914),  # Palermo
-            "LICC": (37.4667, 15.0664)   # Catania
-        }
+    #     # Define Fixed Airports (Reference Points)
+    #     airports = {
+    #         "LMML": (35.8575, 14.4775),  # Malta
+    #         "LICJ": (38.1864, 13.0914),  # Palermo
+    #         "LICC": (37.4667, 15.0664)   # Catania
+    #     }
 
-        # Convert latitude/longitude to screen coordinates
-        def to_screen_coords(lat, lon):
-            """ Convert real-world coordinates to screen space """
-            lat = float(lat)
-            lon = float(lon)
-            MAP_TOP_LEFT = (40.06, 7.97)  # (Max Lat, Min Lon)
-            MAP_BOTTOM_RIGHT = (33.62, 21.87)  # (Min Lat, Max Lon)
-            SCREEN_WIDTH, SCREEN_HEIGHT = 1000, 800  # Match Pygame screen size
-            x = int((lon - MAP_TOP_LEFT[1]) / (MAP_BOTTOM_RIGHT[1] - MAP_TOP_LEFT[1]) * SCREEN_WIDTH)
-            y = int((MAP_TOP_LEFT[0] - lat) / (MAP_TOP_LEFT[0] - MAP_BOTTOM_RIGHT[0]) * SCREEN_HEIGHT)
-            return x, y
+    #     # Convert latitude/longitude to screen coordinates
+    #     def to_screen_coords(lat, lon):
+    #         """ Convert real-world coordinates to screen space """
+    #         lat = float(lat)
+    #         lon = float(lon)
+    #         MAP_TOP_LEFT = (40.06, 7.97)  # (Max Lat, Min Lon)
+    #         MAP_BOTTOM_RIGHT = (33.62, 21.87)  # (Min Lat, Max Lon)
+    #         SCREEN_WIDTH, SCREEN_HEIGHT = 1000, 800  # Match Pygame screen size
+    #         x = int((lon - MAP_TOP_LEFT[1]) / (MAP_BOTTOM_RIGHT[1] - MAP_TOP_LEFT[1]) * SCREEN_WIDTH)
+    #         y = int((MAP_TOP_LEFT[0] - lat) / (MAP_TOP_LEFT[0] - MAP_BOTTOM_RIGHT[0]) * SCREEN_HEIGHT)
+    #         return x, y
 
-        # Draw Airport Locations
-        for name, (lat, lon) in airports.items():
-            x, y = to_screen_coords(lat, lon)
-            pygame.draw.circle(self.screen, (255, 255, 0), (x, y), 10)  # Yellow for Airports
-            text_surface = self.font.render(name, True, (255, 255, 0))
-            self.screen.blit(text_surface, (x + 5, y - 20))
-        # print("Render Observation", observations)
+    #     # Draw Airport Locations
+    #     for name, (lat, lon) in airports.items():
+    #         x, y = to_screen_coords(lat, lon)
+    #         pygame.draw.circle(self.screen, (255, 255, 0), (x, y), 10)  # Yellow for Airports
+    #         text_surface = self.font.render(name, True, (255, 255, 0))
+    #         self.screen.blit(text_surface, (x + 5, y - 20))
+    #     # print("Render Observation", observations)
 
-        # Draw All Aircraft
-        for i, data in enumerate(observations):
-            # print("DATA", data, observations[data]["lat"], observations[data]["long"])
-            x, y = to_screen_coords(observations[data]["lat"], observations[data]["long"])  # (lat, long)
+    #     # Draw All Aircraft
+    #     for i, data in enumerate(observations):
+    #         # print("DATA", data, observations[data]["lat"], observations[data]["long"])
+    #         x, y = to_screen_coords(observations[data]["lat"], observations[data]["long"])  # (lat, long)
 
-            # Determine color based on distance to waypoint
-            dist_to_wpt = observations[data]["dist_to_wpt"]
-            if dist_to_wpt > 150:
-                color = (65, 169, 204)  # Blue (Far)
-            elif 101 <= dist_to_wpt <= 150:
-                color = (135, 194, 83)  # Green (Mid-Range)
-            elif 51 <= dist_to_wpt < 101:
-                color = (194, 148, 83)  # Orange (Approaching)
-            else:
-                color = (194, 83, 83)  # Red (Very Close)
+    #         # Determine color based on distance to waypoint
+    #         dist_to_wpt = observations[data]["dist_to_wpt"]
+    #         if dist_to_wpt > 150:
+    #             color = (65, 169, 204)  # Blue (Far)
+    #         elif 101 <= dist_to_wpt <= 150:
+    #             color = (135, 194, 83)  # Green (Mid-Range)
+    #         elif 51 <= dist_to_wpt < 101:
+    #             color = (194, 148, 83)  # Orange (Approaching)
+    #         else:
+    #             color = (194, 83, 83)  # Red (Very Close)
 
-            # Draw aircraft as small squares
-            pygame.draw.rect(self.screen, color, (x - 5, y - 5, 10, 10))
+    #         # Draw aircraft as small squares
+    #         pygame.draw.rect(self.screen, color, (x - 5, y - 5, 10, 10))
 
-            # Display Aircraft Information (Callsign, Heading, Distance to Waypoint)
-            plane_text = (
-                f"Plane {i+1} | {observations[data]["heading"]:.1f}°\n"
-                f"Dist: {observations[data]["dist_to_wpt"]:.1f} km | Bearing: {observations[data]["qdr_to_wpt"]:.1f}°"
-            )
-            text_lines = plane_text.split("\n")
+    #         # Display Aircraft Information (Callsign, Heading, Distance to Waypoint)
+    #         plane_text = (
+    #             f"Plane {i+1} | {observations[data]['heading']:.1f}°\n"
+    #             f"Dist: {observations[data]['dist_to_wpt']:.1f} km | Bearing: {observations[data]['qdr_to_wpt']:.1f}°"
+    #         )
+    #         text_lines = plane_text.split("\n")
 
-            for j, line in enumerate(text_lines):
-                text_surface = self.font.render(line, True, (255, 255, 255))
-                self.screen.blit(text_surface, (x + 12, y + (j * 15)))  # Offset text to the right
+    #         for j, line in enumerate(text_lines):
+    #             text_surface = self.font.render(line, True, (255, 255, 255))
+    #             self.screen.blit(text_surface, (x + 12, y + (j * 15)))  # Offset text to the right
 
-        pygame.display.flip()
+    #     pygame.display.flip()
     
     def close(self):
         """ Close the environment and terminate the connection """
         
-        if hasattr(self, 'screen'):
-                pygame.display.quit()
-                pygame.quit()
+        # try:
+        #     if hasattr(self, 'screen'):
+        #             pygame.display.quit()
+        #             pygame.quit()
+        # except:
+        #     pass
         
         # # Reset state
         # self.send_action({"reset": True})
