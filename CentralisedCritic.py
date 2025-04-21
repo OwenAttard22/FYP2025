@@ -23,31 +23,50 @@ from ray.rllib.models import ModelCatalog
 # Centralised critic model takes agen'ts observation + others' actions as input
 
 class CentralisedCriticModel(TorchModelV2, nn.Module):
-    def __init__(self, obs_space, action_space, num_outputs, model_config, name):
+    def __init__(self, obs_space, action_space, num_outputs, model_config, name, **kwargs):
         TorchModelV2.__init__(self, obs_space, action_space, num_outputs, model_config, name)
         nn.Module.__init__(self)
 
-        self.policy_net = FullyConnectedNetwork(
-            obs_space, action_space, num_outputs, model_config, name + "_policy"
+        self.obs_size = int(np.prod(obs_space.shape))
+
+        if num_outputs is None:
+            num_outputs = int(np.prod(action_space.shape)) if hasattr(action_space, 'shape') else action_space.n
+        self.num_outputs = num_outputs
+
+        self.policy_branch = nn.Sequential(
+            nn.Linear(self.obs_size, 128),
+            nn.ReLU(),
+            nn.Linear(128, num_outputs)
         )
 
-        # centralised critic: obs + opponent_actions
-        input_size = obs_space.shape[0] + model_config.get("opponent_action_len", 1)
-        hidden_size = 256
-        self.central_critic = nn.Sequential(
-            nn.Linear(input_size, hidden_size),
+        self.value_branch = nn.Sequential(
+            nn.Linear(self.obs_size, 128),
             nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, 1)
+            nn.Linear(128, 1)
         )
+
+        opponent_action_dim = model_config.get("custom_model_config", {}).get("opponent_action_dim", 0)
+        self.central_vf_branch = nn.Sequential(
+            nn.Linear(self.obs_size + opponent_action_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, 1)
+        )
+
+        self._value_out = None
 
     def forward(self, input_dict, state, seq_lens):
-        return self.policy_net.forward(input_dict, state, seq_lens)
+        x = input_dict["obs_flat"]
+        self._value_out = self.value_branch(x)
+        return self.policy_branch(x), []
+
+    def value_function(self):
+        return self._value_out.squeeze(-1)
 
     def central_value_function(self, obs, opponent_actions):
         x = torch.cat([obs, opponent_actions], dim=-1)
-        return self.central_critic(x).squeeze(-1)
+        return self.central_vf_branch(x).squeeze(-1)
 
 OPPONENT_ACTIONS = "opponent_actions"
 
@@ -58,21 +77,31 @@ class centralisedValueMixin:
 
 def centralised_critic_postprocessing(policy, sample_batch, other_agent_batches=None, episode=None):
     if other_agent_batches:
-        all_opponent_actions = []
-        for other_id, (_, _, batch) in other_agent_batches.items():
-            all_opponent_actions.append(batch[SampleBatch.ACTIONS])
+        # find minimal length across current and opponent batches
+        cur_len = len(sample_batch[SampleBatch.ACTIONS])
+        other_lens = [len(batch[SampleBatch.ACTIONS])
+                      for _, (_, _, batch) in other_agent_batches.items()]
+        min_len = min([cur_len] + other_lens)
 
-        # Concatenate all opponents' actions (assuming Discrete)
-        opponent_actions = torch.stack([
-            torch.tensor(a, dtype=torch.float32) for a in zip(*all_opponent_actions)
-        ], dim=1)
+        # trim the current sample_batch
+        for key in sample_batch:
+            sample_batch[key] = sample_batch[key][:min_len]
 
+        # build opponent_actions of shape [min_len, num_opponents]
+        all_opponent_actions = [
+            np.array(batch[SampleBatch.ACTIONS][:min_len], dtype=np.float32)
+            for _, (_, _, batch) in other_agent_batches.items()
+        ]
+        opponent_actions = torch.tensor(
+            np.stack(all_opponent_actions, axis=1),
+            dtype=torch.float32
+        )
         sample_batch[OPPONENT_ACTIONS] = opponent_actions
 
-        # centralised value function estimate
         obs = torch.tensor(sample_batch[SampleBatch.CUR_OBS], dtype=torch.float32)
         sample_batch[SampleBatch.VF_PREDS] = (
-            policy.compute_central_vf(obs, opponent_actions).detach().cpu().numpy()
+            policy.compute_central_vf(obs, opponent_actions)
+                  .detach().cpu().numpy()
         )
     else:
         sample_batch[SampleBatch.VF_PREDS] = torch.zeros_like(
@@ -102,7 +131,7 @@ def central_value_stats(policy, train_batch):
 # It overrides the postprocess_trajectory and loss methods to include centralised critic functionality
 # It also includes a stats function to compute explained variance of the centralised value function
 
-class CCPPOPolicy(centralisedValueMixin, PPOTorchPolicy):
+class CCPPOPolicy(PPOTorchPolicy, centralisedValueMixin):
     def __init__(self, observation_space, action_space, config):
         super().__init__(observation_space, action_space, config)
         centralisedValueMixin.__init__(self)
@@ -114,8 +143,12 @@ class CCPPOPolicy(centralisedValueMixin, PPOTorchPolicy):
     @override(PPOTorchPolicy)
     def loss(self, model, dist_class, train_batch):
         obs = train_batch[SampleBatch.CUR_OBS]
-        opp_acts = train_batch[OPPONENT_ACTIONS]
-        self.central_value_out = self.model.central_value_function(obs, opp_acts)
+        if OPPONENT_ACTIONS in train_batch:
+            opp_acts = train_batch[OPPONENT_ACTIONS]
+            self.central_value_out = self.model.central_value_function(obs, opp_acts)
+        else:
+            self.central_value_out = torch.zeros(obs.shape[0])
+
         return super().loss(model, dist_class, train_batch)
 
     @override(PPOTorchPolicy)
@@ -124,56 +157,4 @@ class CCPPOPolicy(centralisedValueMixin, PPOTorchPolicy):
         stats.update(central_value_stats(self, train_batch))
         return stats
 
-class CentralisedLSTMModel(RecurrentNetwork, TorchModelV2):
-    def __init__(self, obs_space, action_space, num_outputs, model_config, name):
-        super(CentralisedLSTMModel, self).__init__(obs_space, action_space, num_outputs, model_config, name)
-
-        self.cell_size = 64  # LSTM hidden size
-        self.obs_size = int(np.product(obs_space.shape))
-        self.num_outputs = num_outputs
-
-        # Policy LSTM branch
-        self.fc = nn.Linear(self.obs_size, 128)
-        self.lstm = nn.LSTM(self.fc.out_features, self.cell_size, batch_first=True)
-        self.policy_out = nn.Linear(self.cell_size, num_outputs)
-        self.value_branch = nn.Linear(self.cell_size, 1)
-
-        # centralised value function branch (different input: own obs + opponent actions)
-        central_input_size = self.obs_size + model_config.get("opponent_action_dim", 0)
-        self.central_vf_branch = nn.Sequential(
-            nn.Linear(central_input_size, 128),
-            nn.ReLU(),
-            nn.Linear(128, 64),
-            nn.ReLU(),
-            nn.Linear(64, 1)
-        )
-
-        self._value_out = None
-
-    @override(ModelV2)
-    def get_initial_state(self):
-        # Return a list of zeros for h and c
-        h = [torch.zeros(1, self.cell_size), torch.zeros(1, self.cell_size)]
-        return h
-
-    @override(RecurrentNetwork)
-    def forward_rnn(self, input_dict, state, seq_lens):
-        x = F.relu(self.fc(input_dict["obs_flat"]))
-        x = x.unsqueeze(1)  # Add time dimension (B, 1, features)
-        h0, c0 = state
-        lstm_out, (h1, c1) = self.lstm(x, (h0.unsqueeze(0), c0.unsqueeze(0)))
-        out = self.policy_out(lstm_out.squeeze(1))
-        self._value_out = self.value_branch(lstm_out.squeeze(1))
-        return out, [h1.squeeze(0), c1.squeeze(0)]
-
-    @override(ModelV2)
-    def value_function(self):
-        return self._value_out.squeeze(1)
-
-    def central_value_function(self, obs, opponent_actions):
-        # obs: (B, obs_dim)
-        # opponent_actions: (B, opponent_action_dim)
-        x = torch.cat([obs, opponent_actions], dim=-1)
-        return self.central_vf_branch(x).squeeze(1)
-    
-ModelCatalog.register_custom_model("My_CC_LSTM_PPO", CentralisedLSTMModel)
+ModelCatalog.register_custom_model("My_CC_PPO", CentralisedCriticModel)
