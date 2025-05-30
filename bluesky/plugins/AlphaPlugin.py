@@ -1,6 +1,6 @@
 import threading
 import random
-from bluesky import core, stack, traf, tools
+from bluesky import core, stack, traf, tools, sim, net
 import time
 import geopy.distance
 from geopy.distance import geodesic
@@ -8,6 +8,7 @@ import math
 import socket, json
 from haversine import haversine, Unit
 import sys
+import numpy as np
 # from bluesky import bs
 
 HOST = "127.0.0.1"
@@ -38,16 +39,34 @@ DESTINATIONS = {
     "BLADE": [LICC_LAT, LICC_LONG],
 }
 
-ACTIONS ={
-    0: -20,
-    1: -15,
-    2: -10,
-    3: -5,
-    4: 0,
-    5: 5,
-    6: 10,
-    7: 15,
-    8: 20
+# ACTIONS ={
+#     0: -20,
+#     1: -15,
+#     2: -10,
+#     3: -5,
+#     4: 0,
+#     5: 5,
+#     6: 10,
+#     7: 15,
+#     8: 20
+# }
+
+# ACTIONS ={
+#     0: -15,
+#     1: -10,
+#     2: -5,
+#     3: 0,
+#     4: 5,
+#     5: 10,
+#     6: 15,
+# }
+
+ACTIONS = {
+    0: -10,
+    1: -5,
+    2: 0,
+    3: 5,
+    4: 10,
 }
 
 def init_plugin():
@@ -57,6 +76,7 @@ def init_plugin():
         'plugin_type': 'sim'
     }
 
+    print("Initialising plugin")
     plugin_instance = TestAlpha()
     # server_thread = threading.Thread(target=plugin_instance.manage_connection)
     # server_thread.start()
@@ -74,15 +94,17 @@ class Plane:
         self.altitude = altitude
         self.heading = heading
         self.dist_to_waypoint = 0.0
-        self.qdr_to_waypoint = 0.0
+        self.brg_to_waypoint = 0.0
+        self.simt = 0.0
         self.neighbours = [None, None, None, None, None, None]
 
-    def update_position(self, lat, long, heading, dist_to_waypoint, qdr_to_waypoint):
+    def update_position(self, lat, long, speed, dist_to_waypoint, brg_to_waypoint, simt):
         self.lat = lat
         self.long = long
-        self.heading = heading
+        self.speed = speed
         self.dist_to_waypoint = dist_to_waypoint
-        self.qdr_to_waypoint = qdr_to_waypoint
+        self.brg_to_waypoint = brg_to_waypoint
+        self.simt = simt
 
     def update_neighbours(self, neighbour1, dist1, bearing1, neighbour2, dist2, bearing2):
         self.neighbours = [neighbour1, dist1, bearing1, neighbour2, dist2, bearing2]
@@ -130,11 +152,19 @@ class TestAlpha(core.Entity):
                                 if message.get("reset"):
                                     print("🔄 Received reset command. Stopping thread...")
                                     self.action_reset()
+                                    
+                                elif "mlstep" in message:
+                                    self.mlstep()
+                                    
+                                elif "actions_cont" in message:
+                                    self.action_apply_continuous_action(message["actions_cont"])
 
                                 elif "actions" in message:
                                     self.action_apply_action(message["actions"])
 
                                 elif "done_planes" in message:
+                                    # print(message)
+                                    # print(buffer)
                                     for plane_id in message["done_planes"]:
                                         print(f"❌ Removing {plane_id}")
                                         self.action_plane_done(plane_id)
@@ -169,9 +199,10 @@ class TestAlpha(core.Entity):
                 plane_id: {
                     "lat": plane.lat,
                     "long": plane.long,
-                    "heading": plane.heading,
+                    # "heading": plane.heading,
+                    "simt": plane.simt,
                     "dist_to_wpt": plane.dist_to_waypoint,
-                    "qdr_to_wpt": plane.qdr_to_waypoint,
+                    "brg_to_wpt": plane.brg_to_waypoint,
                     "neighbour1_dist": plane.neighbours[1],
                     "neighbour1_bearing": plane.neighbours[2],
                     "neighbour2_dist": plane.neighbours[4],
@@ -194,9 +225,27 @@ class TestAlpha(core.Entity):
             speed = traf.tas[traf.id2idx(plane_id)]
             altitude = traf.alt[traf.id2idx(plane_id)]
             heading = traf.hdg[traf.id2idx(plane_id)]
-            self.planes[plane_id] = Plane(name, lat, lon, speed, altitude, heading)
+            simt = sim.simt
+            self.planes[plane_id] = Plane(name, lat, lon, speed, altitude, simt, heading)
 
+    # def update(self):
+    #     for plane_id in traf.id:
+    #         plane = self.planes.get(plane_id)
+    #         if plane:
+    #             lat = traf.lat[traf.id2idx(plane_id)]
+    #             lon = traf.lon[traf.id2idx(plane_id)]
+    #             hdg = traf.hdg[traf.id2idx(plane_id)]
+    #             call_sign = plane_id.upper()
+    #             destination = DESTINATIONS.get(call_sign, [0, 0])
+    #             _, brg_to_wpt = tools.geo.qdrdist(lat, lon, destination[0], destination[1])
+    #             brg_to_wpt = 180 - brg_to_wpt
+    #             dist_to_wpt = haversine((lat, lon), (destination[0], destination[1]), unit=Unit.KILOMETERS)
+    #             plane.update_position(lat, lon, hdg, dist_to_wpt, brg_to_wpt)
+    
     def update(self):
+        simt = sim.simt
+        if simt is None:
+            simt = 0.0
         for plane_id in traf.id:
             plane = self.planes.get(plane_id)
             if plane:
@@ -205,13 +254,40 @@ class TestAlpha(core.Entity):
                 hdg = traf.hdg[traf.id2idx(plane_id)]
                 call_sign = plane_id.upper()
                 destination = DESTINATIONS.get(call_sign, [0, 0])
-                _, qdr_to_wpt = tools.geo.qdrdist(lat, lon, destination[0], destination[1])
+                
+                brg_to_wpt, _ = tools.geo.qdrdist(lat, lon, destination[0], destination[1])
+
+                relative_bearing = (brg_to_wpt - hdg + 360) % 360
+                if relative_bearing > 180:
+                    relative_bearing -= 360
+
                 dist_to_wpt = haversine((lat, lon), (destination[0], destination[1]), unit=Unit.KILOMETERS)
-                plane.update_position(lat, lon, hdg, dist_to_wpt, qdr_to_wpt)
+                
+                plane.update_position(lat, lon, hdg, dist_to_wpt, relative_bearing, simt)
                 
         # self.check_for_echo_messages()
         self.find_neighbours()
         time.sleep(0.1)
+        
+    def mlstep(self):
+        """Manually process one simulation step."""
+        # pass
+        sim.step(dt_increment=1)
+        sim.step(dt_increment=1)
+        sim.step(dt_increment=1)
+        sim.step(dt_increment=1)
+        sim.step(dt_increment=1)
+        # sim.hold()
+        
+        # try:
+            # self.socket.sendall(json.dumps({"mlstep_done": True}).encode() + b"\n")
+        # except:
+            # print("Error sending mlstep_done message to environment.")
+        
+        # for plane_id in self.planes.keys():
+        #     traf.hdg[traf.id2idx(plane_id)] = self.planes[plane_id].heading
+        # traf.update()
+        
         
     # def check_for_echo_messages(self):
     #     """Method to retrieve and process any echo messages from BlueSky."""
@@ -220,23 +296,61 @@ class TestAlpha(core.Entity):
     #         for message in echo_messages:
     #             print(f"Received ECHO: {message}"
         
-    def find_neighbours(self):
-        '''Computes the two nearest neighbours for each plane'''
+    # def find_neighbours(self):
+    #     '''Computes the two nearest neighbours for each plane'''
         
-        positions = {plane_id: (plane.lat, plane.long) for plane_id, plane in self.planes.items()}
+    #     positions = {plane_id: (plane.lat, plane.long) for plane_id, plane in self.planes.items()}
                 
-        for plane_id, (lat, long) in positions.items():
+    #     for plane_id, (lat, long) in positions.items():
+    #         distances = []
+            
+    #         for other_id, (other_lat, other_lon) in positions.items():
+    #             if plane_id != other_id:
+    #                 distance = geopy.distance.distance((lat, long), (other_lat, other_lon)).km
+    #                 # distance = haversine((lat, long), (other_lat, other_lon))
+    #                 _, bearing = tools.geo.qdrdist(lat, long, other_lat, other_lon)
+    #                 distances.append((other_id, distance, bearing))
+                    
+    #         distances.sort(key=lambda x: x[1])  # sort distances list
+        
+    #         if len(distances) >= 2:
+    #             neighbour1, dist1, bearing1 = distances[0]
+    #             neighbour2, dist2, bearing2 = distances[1]
+    #         elif len(distances) == 1:
+    #             try:
+    #                 neighbour1, dist1, bearing1 = distances[0]
+    #                 neighbour2, dist2, bearing2 = None, None, None
+    #             except:
+    #                 neighbour1, dist1, bearing1, neighbour2, dist2, bearing2 = None, None, None, None, None, None
+    #         else:
+    #             neighbour1, dist1, bearing1, neighbour2, dist2, bearing2 = None, None, None, None, None, None
+                
+    #         if plane_id in self.planes:
+    #             self.planes[plane_id].update_neighbours(neighbour1, dist1, bearing1, neighbour2, dist2, bearing2)
+    #             # print(f"ID: {plane_id}, {neighbour1}, {dist1}, {bearing1}, {neighbour2}, {dist2}, {bearing2}")
+    
+    def find_neighbours(self):
+        '''Computes the two nearest neighbours for each plane, using relative bearing'''
+        
+        positions = {plane_id: (plane.lat, plane.long, plane.heading) for plane_id, plane in self.planes.items()}
+                
+        for plane_id, (lat, lon, hdg) in positions.items():
             distances = []
             
-            for other_id, (other_lat, other_lon) in positions.items():
+            for other_id, (other_lat, other_lon, _) in positions.items():
                 if plane_id != other_id:
-                    distance = geopy.distance.distance((lat, long), (other_lat, other_lon)).km
-                    # distance = haversine((lat, long), (other_lat, other_lon))
-                    _, bearing = tools.geo.qdrdist(lat, long, other_lat, other_lon)
-                    distances.append((other_id, distance, bearing))
+                    distance = geopy.distance.distance((lat, lon), (other_lat, other_lon)).km
+                    brg_to_other, _ = tools.geo.qdrdist(lat, lon, other_lat, other_lon)
+
+                    # --- Compute RELATIVE bearing ---
+                    relative_bearing = (brg_to_other - hdg + 360) % 360
+                    if relative_bearing > 180:
+                        relative_bearing -= 360
+
+                    distances.append((other_id, distance, relative_bearing))
                     
-            distances.sort(key=lambda x: x[1])  # sort distances list
-        
+            distances.sort(key=lambda x: x[1])  # sort by distance ascending
+
             if len(distances) >= 2:
                 neighbour1, dist1, bearing1 = distances[0]
                 neighbour2, dist2, bearing2 = distances[1]
@@ -257,8 +371,21 @@ class TestAlpha(core.Entity):
         for plane_id, action in actions.items():
             if plane_id in self.planes:
                 new_heading = (self.planes[plane_id].heading + ACTIONS[action]) % 360
-                stack.stack(f"{plane_id} HDG {new_heading}")
-                # stack.stack(f"DELAY 00:02:00 {plane_id} LNAV ON")
+                # stack.stack(f"{plane_id} HDG {new_heading}")
+                idx = traf.id2idx(plane_id)
+                traf.ap.selhdgcmd(idx, new_heading)
+                self.planes[plane_id].heading = new_heading
+                
+    def action_apply_continuous_action(self, actions):
+        print("Continuous actions: ", actions)
+        for plane_id, action in actions.items():
+            if plane_id in self.planes:
+                action_value = float(np.squeeze(action))
+                new_heading = (self.planes[plane_id].heading + action_value) % 360
+                idx = traf.id2idx(plane_id)
+                traf.ap.selhdgcmd(idx, new_heading)
+                self.planes[plane_id].heading = new_heading
+
 
     # def action_reset(self):
     #     self.planes.clear()
@@ -269,7 +396,7 @@ class TestAlpha(core.Entity):
     
     def action_plane_done(self, plane_id):
         if plane_id in self.planes:
-            print("Attempting to delete plane, ", plane_id)
+            # print("Attempting to delete plane, ", plane_id)
             stack.stack(f"DEL {plane_id}")
             del self.planes[plane_id]
         
@@ -287,6 +414,7 @@ class TestAlpha(core.Entity):
         # Close socket to force exit from recv()
         if self.socket:
             try:
+                # self.socket.sendall(json.dumps({"mlstep_done": True}).encode() + b"\n")
                 self.socket.shutdown(socket.SHUT_RDWR)
                 self.socket.close()
             except Exception as e:
