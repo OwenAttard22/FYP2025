@@ -34,10 +34,10 @@ class Simulation:
         self.simt = 0.0
 
         # Simulation timestep [seconds]
-        self.simdt = bs.settings.simdt
+        self.simdt = bs.settings.simdt * 2
 
         # Simulation timestep multiplier: run sim at n x speed
-        self.dtmult = 1.0
+        self.dtmult = 2.0
 
         # Simulated UTC clock time
         self.utc = datetime.datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
