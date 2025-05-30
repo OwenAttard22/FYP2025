@@ -4,6 +4,9 @@ cache
 scenario/ic.scn
 bluesky/resources/grib
 bluesky/resources/netcdf
+scenario/
+checkpoints/
+logs/
 
 # Potentially locally-copied BADA installation
 bluesky/resources/performance/BADA/*
@@ -15,6 +18,7 @@ docs/_build/
 # virtual environment
 venv
 env
+env2
 
 # PyBuilder
 target/
